@@ -1,3 +1,10 @@
+## LootCollector 0.8.5 - Forked project, fix error, add new filter options
+
+- **Bugfix:** Fixes memory allocation error: block too big
+- **Multi-stat filtering:** Added a keep-open Stats multi-select. Items must match every selected stat, enabling searches such as Spell Power + Critical Strike.
+- **Armor and weapon class filtering:** Added Armor and Weapons multi-selects that combine with the existing rarity, slot, level, usable-by, and text filters.
+- **Filter for upgrades:** Added filter for upgrades, which helps finding items with stats selected in multi-stat filter vs equipped items
+
 ## LootCollector 0.8.5 - Fix.
 - **Lua error fix**
 

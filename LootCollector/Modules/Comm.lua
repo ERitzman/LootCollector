@@ -182,6 +182,14 @@ local BATCH_SIZE_COMBAT = 2
 local RAW_PROCESS_BUDGET_MS = 3
 Comm._processTimer = 0
 
+local function enqueueRawMessage(entry)
+    if #Comm.rawBuffer >= RAW_BUFFER_CAP then
+        table.remove(Comm.rawBuffer, 1)
+    end
+
+    table.insert(Comm.rawBuffer, entry)
+end
+
     
 local function trackInvalidSender(sender, reason, payload)
     if not (L.db and L.db.profile) then return end
@@ -1836,7 +1844,12 @@ local function _onChatMsgChannel(_, _, msg, sender, _, _, _, _, _, _, channelNam
         return 
     end
     
-    table.insert(Comm.rawBuffer, { type="CHAT", msg=msg, sender=sender, channel=channelName })
+    if type(msg) ~= "string" or not msg:match("^LC[1-5]:") then
+        if pTime then L:ProfileStop("Comm:_onChatMsgChannel", pTime) end
+        return
+    end
+    
+    enqueueRawMessage({ type="CHAT", msg=msg, sender=sender, channel=channelName })
     
     if pTime then L:ProfileStop("Comm:_onChatMsgChannel", pTime) end 
 end
@@ -1864,11 +1877,7 @@ function Comm:OnCommReceived(prefix, message, distribution, sender)
         if pTime then L:ProfileStop("Comm:OnCommReceived", pTime) end
         return 
     end        
-    if #Comm.rawBuffer >= RAW_BUFFER_CAP then
-        table.remove(Comm.rawBuffer, 1)
-    end
-    
-    table.insert(Comm.rawBuffer, { type="ACE", msg=message, dist=distribution, sender=sender })
+    enqueueRawMessage({ type="ACE", msg=message, dist=distribution, sender=sender })
     
     if pTime then L:ProfileStop("Comm:OnCommReceived", pTime) end 
 end

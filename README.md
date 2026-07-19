@@ -1,7 +1,7 @@
 # LootCollector
 
 > [!IMPORTANT]
-> ** Active development and support for LootCollector has ended. The repository is now archived and will no longer receive updates. Thank you to everyone who helped build and test this Proof of Concept (POC) project.**
+> ** This project was forked from ERitzman/LootCollector and is a continuation for the Conquest of Azeroth realm.**
 
 ---
 

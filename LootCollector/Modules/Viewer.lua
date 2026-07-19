@@ -73,6 +73,8 @@ Viewer.lootedFilterState = nil
 Viewer.collectedMEFilterState = nil 
 Viewer.hasUncachedData = false
 Viewer.lastSeenSortState = "off"
+Viewer.showUpgrades = false
+Viewer._equipmentRevision = 0
 
 local time = time or os.time
 
@@ -136,7 +138,14 @@ Viewer.itemsPerPage   = 100
 Viewer.totalItems     = 0
 
 Viewer.columnFilters  = {
-    eq       = { slot = {}, type = {}, class = {} },
+    eq       = {
+        slot = {},
+        type = {},
+        class = {},
+        armorClass = {},
+        weaponClass = {},
+        stats = {},
+    },
     ms       = { class = {} },
     zone     = {},
     source   = {},
@@ -323,6 +332,7 @@ local Cache = {
     filteredResults = {},
     lastFilterState = nil,
     duplicateItems = {},
+    upgradeStats = {},
     _cleanupRequired = false,
 }
 
@@ -459,6 +469,252 @@ end
 
 local function IsMysticScroll(itemName)
     return itemName and _strfind(itemName, "Mystic Scroll", 1, true) ~= nil
+end
+
+local STAT_FILTER_DEFINITIONS = {
+    { label = "Strength",           patterns = { " strength" } },
+    { label = "Agility",            patterns = { " agility" } },
+    { label = "Stamina",            patterns = { " stamina" } },
+    { label = "Intellect",          patterns = { " intellect" } },
+    { label = "Spirit",             patterns = { " spirit" } },
+    { label = "Attack Power",       patterns = { "attack power" } },
+    { label = "Spell Power",        patterns = { "spell power" } },
+    { label = "Critical Strike",    patterns = { "critical strike rating", "critical strike" } },
+    { label = "Hit",                patterns = { "hit rating" } },
+    { label = "Haste",              patterns = { "haste rating" } },
+    { label = "Expertise",          patterns = { "expertise rating", " expertise" } },
+    { label = "Armor Penetration",  patterns = { "armor penetration" } },
+    { label = "Spell Penetration",  patterns = { "spell penetration" } },
+    { label = "Defense",            patterns = { "defense rating", " defence rating" } },
+    { label = "Dodge",              patterns = { "dodge rating" } },
+    { label = "Parry",              patterns = { "parry rating" } },
+    { label = "Block",              patterns = { "block rating" } },
+    { label = "Resilience",         patterns = { "resilience rating" } },
+    { label = "Mana per 5 sec",     patterns = { "mana per 5 sec", "mana every 5 sec", "mana per 5 seconds" } },
+    { label = "Health per 5 sec",   patterns = { "health per 5 sec", "health every 5 sec", "health per 5 seconds" } },
+}
+
+local STAT_FILTER_PATTERNS = {}
+local STAT_FILTER_VALUES = {}
+for _, definition in ipairs(STAT_FILTER_DEFINITIONS) do
+    STAT_FILTER_PATTERNS[definition.label] = definition.patterns
+    _tinsert(STAT_FILTER_VALUES, definition.label)
+end
+local STAT_API_KEYS = {
+    ["Strength"] = { "ITEM_MOD_STRENGTH_SHORT" },
+    ["Agility"] = { "ITEM_MOD_AGILITY_SHORT" },
+    ["Stamina"] = { "ITEM_MOD_STAMINA_SHORT" },
+    ["Intellect"] = { "ITEM_MOD_INTELLECT_SHORT" },
+    ["Spirit"] = { "ITEM_MOD_SPIRIT_SHORT" },
+    ["Attack Power"] = { "ITEM_MOD_ATTACK_POWER_SHORT", "ITEM_MOD_RANGED_ATTACK_POWER_SHORT" },
+    ["Spell Power"] = { "ITEM_MOD_SPELL_POWER_SHORT", "ITEM_MOD_SPELL_DAMAGE_DONE_SHORT" },
+    ["Critical Strike"] = { "ITEM_MOD_CRIT_RATING_SHORT", "ITEM_MOD_MELEE_CRIT_RATING_SHORT", "ITEM_MOD_RANGED_CRIT_RATING_SHORT", "ITEM_MOD_SPELL_CRIT_RATING_SHORT" },
+    ["Hit"] = { "ITEM_MOD_HIT_RATING_SHORT", "ITEM_MOD_MELEE_HIT_RATING_SHORT", "ITEM_MOD_RANGED_HIT_RATING_SHORT", "ITEM_MOD_SPELL_HIT_RATING_SHORT" },
+    ["Haste"] = { "ITEM_MOD_HASTE_RATING_SHORT", "ITEM_MOD_MELEE_HASTE_RATING_SHORT", "ITEM_MOD_RANGED_HASTE_RATING_SHORT", "ITEM_MOD_SPELL_HASTE_RATING_SHORT" },
+    ["Expertise"] = { "ITEM_MOD_EXPERTISE_RATING_SHORT" },
+    ["Armor Penetration"] = { "ITEM_MOD_ARMOR_PENETRATION_RATING_SHORT" },
+    ["Spell Penetration"] = { "ITEM_MOD_SPELL_PENETRATION_SHORT" },
+    ["Defense"] = { "ITEM_MOD_DEFENSE_SKILL_RATING_SHORT" },
+    ["Dodge"] = { "ITEM_MOD_DODGE_RATING_SHORT" },
+    ["Parry"] = { "ITEM_MOD_PARRY_RATING_SHORT" },
+    ["Block"] = { "ITEM_MOD_BLOCK_RATING_SHORT" },
+    ["Resilience"] = { "ITEM_MOD_RESILIENCE_RATING_SHORT" },
+    ["Mana per 5 sec"] = { "ITEM_MOD_MANA_REGENERATION_SHORT" },
+    ["Health per 5 sec"] = { "ITEM_MOD_HEALTH_REGEN_SHORT", "ITEM_MOD_HEALTH_REGENERATION_SHORT" },
+}
+
+local STAT_VALUE_PATTERNS = {
+    ["Strength"] = { "([%+%-]?%d+)%s+strength", "strength%s+by%s+([%+%-]?%d+)" },
+    ["Agility"] = { "([%+%-]?%d+)%s+agility", "agility%s+by%s+([%+%-]?%d+)" },
+    ["Stamina"] = { "([%+%-]?%d+)%s+stamina", "stamina%s+by%s+([%+%-]?%d+)" },
+    ["Intellect"] = { "([%+%-]?%d+)%s+intellect", "intellect%s+by%s+([%+%-]?%d+)" },
+    ["Spirit"] = { "([%+%-]?%d+)%s+spirit", "spirit%s+by%s+([%+%-]?%d+)" },
+    ["Attack Power"] = { "([%+%-]?%d+)%s+attack power", "attack power%s+by%s+([%+%-]?%d+)" },
+    ["Spell Power"] = { "([%+%-]?%d+)%s+spell power", "spell power%s+by%s+([%+%-]?%d+)" },
+    ["Critical Strike"] = { "([%+%-]?%d+)%s+critical strike", "critical strike rating%s+by%s+([%+%-]?%d+)" },
+    ["Hit"] = { "([%+%-]?%d+)%s+hit rating", "hit rating%s+by%s+([%+%-]?%d+)" },
+    ["Haste"] = { "([%+%-]?%d+)%s+haste rating", "haste rating%s+by%s+([%+%-]?%d+)" },
+    ["Expertise"] = { "([%+%-]?%d+)%s+expertise rating", "expertise rating%s+by%s+([%+%-]?%d+)" },
+    ["Armor Penetration"] = { "([%+%-]?%d+)%s+armor penetration", "armor penetration rating%s+by%s+([%+%-]?%d+)" },
+    ["Spell Penetration"] = { "([%+%-]?%d+)%s+spell penetration", "spell penetration%s+by%s+([%+%-]?%d+)" },
+    ["Defense"] = { "([%+%-]?%d+)%s+defense rating", "defense rating%s+by%s+([%+%-]?%d+)" },
+    ["Dodge"] = { "([%+%-]?%d+)%s+dodge rating", "dodge rating%s+by%s+([%+%-]?%d+)" },
+    ["Parry"] = { "([%+%-]?%d+)%s+parry rating", "parry rating%s+by%s+([%+%-]?%d+)" },
+    ["Block"] = { "([%+%-]?%d+)%s+block rating", "block rating%s+by%s+([%+%-]?%d+)" },
+    ["Resilience"] = { "([%+%-]?%d+)%s+resilience rating", "resilience rating%s+by%s+([%+%-]?%d+)" },
+    ["Mana per 5 sec"] = { "([%+%-]?%d+)%s+mana per 5", "([%+%-]?%d+)%s+mana every 5" },
+    ["Health per 5 sec"] = { "([%+%-]?%d+)%s+health per 5", "([%+%-]?%d+)%s+health every 5" },
+}
+
+local upgradeTooltipScanner = CreateFrame("GameTooltip", "LCUpgradeTooltipScanner", nil, "GameTooltipTemplate")
+upgradeTooltipScanner:SetOwner(UIParent, "ANCHOR_NONE")
+
+local EQUIP_LOC_SLOTS = {
+    INVTYPE_HEAD = { 1 }, INVTYPE_NECK = { 2 }, INVTYPE_SHOULDER = { 3 },
+    INVTYPE_BODY = { 4 }, INVTYPE_CHEST = { 5 }, INVTYPE_ROBE = { 5 },
+    INVTYPE_WAIST = { 6 }, INVTYPE_LEGS = { 7 }, INVTYPE_FEET = { 8 },
+    INVTYPE_WRIST = { 9 }, INVTYPE_HAND = { 10 }, INVTYPE_FINGER = { 11, 12 },
+    INVTYPE_TRINKET = { 13, 14 }, INVTYPE_CLOAK = { 15 },
+    INVTYPE_WEAPONMAINHAND = { 16 }, INVTYPE_WEAPONOFFHAND = { 17 },
+    INVTYPE_SHIELD = { 17 }, INVTYPE_HOLDABLE = { 17 },
+    INVTYPE_RANGED = { 18 }, INVTYPE_RANGEDRIGHT = { 18 },
+    INVTYPE_THROWN = { 18 }, INVTYPE_RELIC = { 18 },
+}
+
+local function GetComparableItemStats(itemLink)
+    if not itemLink or itemLink == "" then return {} end
+    if Cache.upgradeStats[itemLink] then return Cache.upgradeStats[itemLink] end
+
+    local comparable = {}
+    local apiStats = {}
+    if type(GetItemStats) == "function" then
+        local ok, result = pcall(GetItemStats, itemLink)
+        if ok and type(result) == "table" then apiStats = result end
+    end
+
+    for label, keyNames in pairs(STAT_API_KEYS) do
+        local bestValue = nil
+        local seenKeys = {}
+        for _, keyName in ipairs(keyNames) do
+            local keysToTry = { keyName, _G[keyName] }
+            for _, key in ipairs(keysToTry) do
+                if type(key) == "string" and not seenKeys[key] then
+                    seenKeys[key] = true
+                    local value = tonumber(apiStats[key])
+                    if value and (bestValue == nil or value > bestValue) then bestValue = value end
+                end
+            end
+        end
+        if bestValue ~= nil then comparable[label] = bestValue end
+    end
+
+    upgradeTooltipScanner:ClearLines()
+    upgradeTooltipScanner:SetHyperlink(itemLink)
+    for i = 2, upgradeTooltipScanner:NumLines() do
+        local left = _G["LCUpgradeTooltipScannerTextLeft" .. i]
+        local right = _G["LCUpgradeTooltipScannerTextRight" .. i]
+        local lineText = ((left and left:GetText()) or "") .. " " .. ((right and right:GetText()) or "")
+        lineText = _strlower(lineText)
+        for label, patterns in pairs(STAT_VALUE_PATTERNS) do
+            if comparable[label] == nil then
+                for _, pattern in ipairs(patterns) do
+                    local value = tonumber(_strmatch(lineText, pattern))
+                    if value then
+                        comparable[label] = value
+                        break
+                    end
+                end
+            end
+        end
+    end
+    upgradeTooltipScanner:Hide()
+
+    Cache.upgradeStats[itemLink] = comparable
+    return comparable
+end
+
+local function GetEquippedStats(slotID)
+    local link = GetInventoryItemLink and GetInventoryItemLink("player", slotID)
+    return GetComparableItemStats(link)
+end
+
+local function CombineSelectedStats(first, second, selectedStats)
+    local combined = {}
+    for statLabel in pairs(selectedStats) do
+        combined[statLabel] = (tonumber(first[statLabel]) or 0) + (tonumber(second[statLabel]) or 0)
+    end
+    return combined
+end
+
+local function IsStrictSelectedStatUpgrade(candidate, baseline, selectedStats)
+    for statLabel in pairs(selectedStats) do
+        if (tonumber(candidate[statLabel]) or 0) <= (tonumber(baseline[statLabel]) or 0) then
+            return false
+        end
+    end
+    return true
+end
+
+local function MatchesSelectedStatUpgrade(data, selectedStats)
+    if size(selectedStats) == 0 or not data or data.isVendor or data.isMystic then return false end
+
+    local equipLoc = data.equipLoc
+    local itemLink = data.itemLink or (data.discovery and data.discovery.il)
+    if (not itemLink or itemLink == "") and data.discovery and data.discovery.i then
+        itemLink = select(2, GetItemInfo(data.discovery.i))
+    end
+    if not equipLoc or equipLoc == "" or not itemLink then return false end
+
+    local candidate = GetComparableItemStats(itemLink)
+    local baselines = {}
+
+    if equipLoc == "INVTYPE_2HWEAPON" then
+        baselines[1] = CombineSelectedStats(GetEquippedStats(16), GetEquippedStats(17), selectedStats)
+    elseif equipLoc == "INVTYPE_WEAPON" then
+        baselines[1] = GetEquippedStats(16)
+        local mainHandLink = GetInventoryItemLink and GetInventoryItemLink("player", 16)
+        local mainHandEquipLoc = mainHandLink and select(9, GetItemInfo(mainHandLink))
+        local hasTwoHandedMain = mainHandEquipLoc == "INVTYPE_2HWEAPON"
+        if not hasTwoHandedMain and type(CanDualWield) == "function" and CanDualWield() then
+            baselines[2] = GetEquippedStats(17)
+        end
+    else
+        local slots = EQUIP_LOC_SLOTS[equipLoc]
+        if not slots then return false end
+        for _, slotID in ipairs(slots) do
+            baselines[#baselines + 1] = GetEquippedStats(slotID)
+        end
+    end
+
+    for _, baseline in ipairs(baselines) do
+        if IsStrictSelectedStatUpgrade(candidate, baseline, selectedStats) then return true end
+    end
+    return false
+end
+
+local function MatchesSelectedStats(data, selectedStats)
+    if size(selectedStats) == 0 then return true end
+    if not data or data.isVendor or data.isMystic then return false end
+
+    local tooltipText = data.tooltipText or ""
+    if tooltipText == "" then return false end
+
+    for statLabel in pairs(selectedStats) do
+        local patterns = STAT_FILTER_PATTERNS[statLabel]
+        local matched = false
+        if patterns then
+            for _, pattern in ipairs(patterns) do
+                if _strfind(tooltipText, pattern, 1, true) then
+                    matched = true
+                    break
+                end
+            end
+        end
+        if not matched then return false end
+    end
+    return true
+end
+
+local function IsArmorClassItem(data)
+    local typeID = tonumber(data and data.it)
+    local subtypeID = tonumber(data and data.ist)
+    return typeID == 1 and subtypeID and subtypeID >= 1 and subtypeID <= 5
+end
+
+local function IsWeaponClassItem(data)
+    return tonumber(data and data.it) == 4
+end
+
+local function MatchesSelectedEquipmentClasses(data, armorClasses, weaponClasses)
+    local hasArmorFilters = size(armorClasses) > 0
+    local hasWeaponFilters = size(weaponClasses) > 0
+    if not hasArmorFilters and not hasWeaponFilters then return true end
+    if not data or data.isVendor or data.isMystic then return false end
+
+    local subtype = data.itemSubType or ""
+    local armorMatch = hasArmorFilters and IsArmorClassItem(data) and armorClasses[subtype] ~= nil
+    local weaponMatch = hasWeaponFilters and IsWeaponClassItem(data) and weaponClasses[subtype] ~= nil
+    return armorMatch or weaponMatch
 end
 
 function Viewer:EnsureVendorInventoryPanel()
@@ -688,6 +944,17 @@ GetCascadedFilterContext = function(excludeColumn)
             if excludeColumn ~= "class" and size(filterGroup.class) > 0 then
                 context.activeFilters.class = filterGroup.class
             end
+            if excludeColumn ~= "armorClass" and excludeColumn ~= "weaponClass" then
+                if size(filterGroup.armorClass) > 0 then
+                    context.activeFilters.armorClass = filterGroup.armorClass
+                end
+                if size(filterGroup.weaponClass) > 0 then
+                    context.activeFilters.weaponClass = filterGroup.weaponClass
+                end
+            end
+            if excludeColumn ~= "stats" and size(filterGroup.stats) > 0 then
+                context.activeFilters.stats = filterGroup.stats
+            end
         end
     elseif Viewer.currentFilter == "ms" then
         if excludeColumn ~= "class" and size(Viewer.columnFilters.ms.class) > 0 then
@@ -790,6 +1057,20 @@ GetFilteredDatasetForUniqueValues = function(context)
             if passed and context.activeFilters.type then
                 local typeValue = data.itemSubType or ""
                 if not context.activeFilters.type[typeValue] then passed = false end
+            end
+
+            if passed and (context.activeFilters.armorClass or context.activeFilters.weaponClass) then
+                if not MatchesSelectedEquipmentClasses(
+                    data,
+                    context.activeFilters.armorClass or {},
+                    context.activeFilters.weaponClass or {}
+                ) then
+                    passed = false
+                end
+            end
+
+            if passed and context.activeFilters.stats then
+                if not MatchesSelectedStats(data, context.activeFilters.stats) then passed = false end
             end
 
             if passed and context.activeFilters.class then
@@ -945,6 +1226,14 @@ GetUniqueValues = function(column)
          return values
     end
 
+    if column == "stats" then
+        local values = {}
+        for _, statLabel in ipairs(STAT_FILTER_VALUES) do
+            _tinsert(values, statLabel)
+        end
+        return values
+    end
+
     local filteredDataset = GetFilteredDatasetForUniqueValues(context)
     local values = {}
     local seen = {}
@@ -985,6 +1274,12 @@ GetUniqueValues = function(column)
        local columnExtractor = {
             slot = function(data) return data.equipLoc and _G[data.equipLoc] or "" end,
             type = function(data) return data.itemSubType or "" end,
+            armorClass = function(data)
+                return IsArmorClassItem(data) and (data.itemSubType or "") or ""
+            end,
+            weaponClass = function(data)
+                return IsWeaponClassItem(data) and (data.itemSubType or "") or ""
+            end,
             class = function(data)
                 if data.cl and data.cl ~= "cl" then
                     local classToken = CLASS_ABBREVIATIONS_REVERSE[data.cl]
@@ -1351,6 +1646,12 @@ function Viewer:ShowColumnFilterDropdown(column, anchor, values)
                 local columnExtractor = {
                     slot = function(data) return data.equipLoc and _G[data.equipLoc] or "" end,
                     type = function(data) return data.itemSubType or "" end,
+                    armorClass = function(data)
+                        return IsArmorClassItem(data) and (data.itemSubType or "") or ""
+                    end,
+                    weaponClass = function(data)
+                        return IsWeaponClassItem(data) and (data.itemSubType or "") or ""
+                    end,
                     class = function(data) return data.characterClass or "" end,
                     source = function(data)
                         local raw = data.discovery.src
@@ -1411,6 +1712,10 @@ function Viewer:ShowColumnFilterDropdown(column, anchor, values)
                 Viewer.columnFilters.eq.slot = {}
                 Viewer.columnFilters.eq.type = {}
                 Viewer.columnFilters.eq.class = {}
+                Viewer.columnFilters.eq.armorClass = {}
+                Viewer.columnFilters.eq.weaponClass = {}
+                Viewer.columnFilters.eq.stats = {}
+                Viewer.showUpgrades = false
                 Viewer.columnFilters.ms.class = {}
                 Viewer.columnFilters.source = {}
                 Viewer.columnFilters.quality = {}
@@ -1499,9 +1804,13 @@ function Viewer:ShowColumnFilterDropdown(column, anchor, values)
             local info = {
                 text = displayText,
                 checked = isChecked,
+                keepShownOnClick = column == "stats" or column == "armorClass" or column == "weaponClass",
                 func = function()
                     if not filterTable then return end
                     if filterTable[value] then filterTable[value] = nil else filterTable[value] = true end
+                    if column == "stats" and size(filterTable) == 0 then
+                        Viewer.showUpgrades = false
+                    end
 
                     Viewer.currentPage = 1
                     Cache.filteredResults = {}
@@ -1512,7 +1821,9 @@ function Viewer:ShowColumnFilterDropdown(column, anchor, values)
                     Viewer:RefreshData()
                     Viewer:UpdateClearAllButton()
                     Viewer:UpdateFilterButtonStates()
-                    HideDropDownMenu(1)
+                    if column ~= "stats" and column ~= "armorClass" and column ~= "weaponClass" then
+                        HideDropDownMenu(1)
+                    end
                 end
             }
             UIDropDownMenu_AddButton(info, level)
@@ -1739,6 +2050,7 @@ function Viewer:ProcessCacheBuildChunk(budgetOverride)
                 row.cl            = discovery.cl
                 row.isVendor      = false
                 row.tooltipText   = itemData.fullText or ""
+                row.itemLink      = itemLink
                 
                 row.zoneNameStr   = GetLocalizedZoneName(discovery)
                 row.sortQuality   = tonumber(discovery.q) or 1
@@ -2010,6 +2322,19 @@ function Viewer:GetFilteredDiscoveries()
                     if not filterGroup.slot(data) then passed = false end
                     if passed and not filterGroup.type(data) then passed = false end
                 end
+                if passed and not MatchesSelectedEquipmentClasses(
+                    data,
+                    self.columnFilters.eq.armorClass,
+                    self.columnFilters.eq.weaponClass
+                ) then
+                    passed = false
+                end
+                if passed and not MatchesSelectedStats(data, self.columnFilters.eq.stats) then
+                    passed = false
+                end
+                if passed and self.showUpgrades and not MatchesSelectedStatUpgrade(data, self.columnFilters.eq.stats) then
+                    passed = false
+                end
             elseif passed and self.currentFilter == "ms" then
                 if not filterPredicates.columnFilters.ms.class(data) then passed = false end
             elseif passed and self.currentFilter == "bmv" then
@@ -2172,12 +2497,14 @@ function Viewer:GetFilterStateHash()
         tostring(self.sortAscending),
         tostring(self.minReqLevel),
         tostring(self.maxReqLevel),
-        tostring(self.lastSeenSortState or "off")
+        tostring(self.lastSeenSortState or "off"),
+        tostring(self.showUpgrades),
+        tostring(self._equipmentRevision or 0)
     }
 
     local filterEntries = {}
     for filterType, filters in pairs(self.columnFilters) do
-        if type(filters) == "table" then
+        if filterType == "eq" or filterType == "ms" then
             for column, values in pairs(filters) do
                 if type(values) == "table" and size(values) > 0 then
                     local sortedValues = keys(values)
@@ -2185,6 +2512,10 @@ function Viewer:GetFilterStateHash()
                     _tinsert(filterEntries, concatStrings(filterType, ":", column, ":", _tconcat(sortedValues, ",")))
                 end
             end
+        elseif type(filters) == "table" and size(filters) > 0 then
+            local sortedValues = keys(filters)
+            _tsort(sortedValues)
+            _tinsert(filterEntries, concatStrings(filterType, ":", _tconcat(sortedValues, ",")))
         elseif filterType == "duplicates" and filters then
             _tinsert(filterEntries, "duplicates:true")
         end
@@ -2300,7 +2631,15 @@ function Viewer:HasActiveFilters()
     if self.minReqLevel or self.maxReqLevel then return true end
     if size(self.columnFilters.zone) > 0 then return true end
  
-    if self.columnFilters.eq and (size(self.columnFilters.eq.slot) > 0 or size(self.columnFilters.eq.type) > 0 or size(self.columnFilters.eq.class) > 0) then
+    if self.columnFilters.eq and (
+        size(self.columnFilters.eq.slot) > 0 or
+        size(self.columnFilters.eq.type) > 0 or
+        size(self.columnFilters.eq.class) > 0 or
+        size(self.columnFilters.eq.armorClass) > 0 or
+        size(self.columnFilters.eq.weaponClass) > 0 or
+        size(self.columnFilters.eq.stats) > 0 or
+        self.showUpgrades
+    ) then
         return true
     end
 
@@ -2410,6 +2749,30 @@ function Viewer:UpdateFilterButtonStates()
         self.slotsFilterBtn:SetText("Slots")
     end
     
+    if self.statsFilterBtn then
+        local active = size(self.columnFilters.eq.stats) > 0
+        setButtonTextColor(self.statsFilterBtn, active and 1 or 1, active and 0.8 or 1, active and 0.2 or 1)
+        self.statsFilterBtn:SetText("Stats")
+    end
+    if self.upgradesFilterBtn then
+        local active = self.showUpgrades and size(self.columnFilters.eq.stats) > 0
+        setButtonTextColor(self.upgradesFilterBtn, active and 0.2 or 1, active and 1 or 1, active and 0.35 or 1)
+        self.upgradesFilterBtn:SetText("Upgrades")
+    end
+
+
+    if self.armorClassFilterBtn then
+        local active = size(self.columnFilters.eq.armorClass) > 0
+        setButtonTextColor(self.armorClassFilterBtn, active and 1 or 1, active and 0.8 or 1, active and 0.2 or 1)
+        self.armorClassFilterBtn:SetText("Armor")
+    end
+
+    if self.weaponClassFilterBtn then
+        local active = size(self.columnFilters.eq.weaponClass) > 0
+        setButtonTextColor(self.weaponClassFilterBtn, active and 1 or 1, active and 0.8 or 1, active and 0.2 or 1)
+        self.weaponClassFilterBtn:SetText("Weapons")
+    end
+
     if self.usableByFilterBtn then
         local classActive = false
         if self.currentFilter == "eq" then
@@ -2478,9 +2841,13 @@ function Viewer:UpdateFilterButtonStates()
     if self.qualityFilterBtn then self.qualityFilterBtn:SetShown(showNormalFilters) end
     if self.favoritesFilterBtn then self.favoritesFilterBtn:SetShown(showNormalFilters) end
     if self.slotsFilterBtn then self.slotsFilterBtn:SetShown(showSlots) end
+    if self.statsFilterBtn then self.statsFilterBtn:SetShown(showSlots) end
+    if self.upgradesFilterBtn then self.upgradesFilterBtn:SetShown(showSlots) end
+    if self.armorClassFilterBtn then self.armorClassFilterBtn:SetShown(showSlots) end
+    if self.weaponClassFilterBtn then self.weaponClassFilterBtn:SetShown(showSlots) end
     if self.usableByFilterBtn then self.usableByFilterBtn:SetShown(showNormalFilters) end
     if self.lootedFilterBtn then self.lootedFilterBtn:SetShown(showNormalFilters) end
-    if self.collectedMEFilterBtn then self.collectedMEFilterBtn:SetShown(showNormalFilters) end
+    if self.collectedMEFilterBtn then self.collectedMEFilterBtn:SetShown(isMs) end
     if self.lsFilterBtn then self.lsFilterBtn:SetShown(showNormalFilters) end
     if self.duplicatesFilterBtn then self.duplicatesFilterBtn:SetShown(showDuplicates) end
 
@@ -2491,6 +2858,10 @@ function Viewer:UpdateFilterButtonStates()
             self.qualityFilterBtn,
             self.vendorTypeFilterBtn,
             self.slotsFilterBtn,
+            self.statsFilterBtn,
+            self.upgradesFilterBtn,
+            self.armorClassFilterBtn,
+            self.weaponClassFilterBtn,
             self.usableByFilterBtn,
             self.favoritesFilterBtn,
             self.lootedFilterBtn,
@@ -3560,7 +3931,65 @@ function Viewer:CreateWindow()
     end)
     slotsFilterBtn:RegisterForClicks("LeftButtonUp")
 
-    local usableByFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Usable By", 65, slotsFilterBtn, "RIGHT")
+    local statsFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Stats", 45, slotsFilterBtn, "RIGHT")
+    statsFilterBtn:SetScript("OnClick", function(self)
+        Viewer:ShowColumnFilterDropdown("stats", self, GetUniqueValues("stats"))
+    end)
+    statsFilterBtn:SetScript("OnEnter", function(self)
+        self.bgInner:SetVertexColor(0.14, 0.14, 0.22, 0.95)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Stats filter")
+        GameTooltip:AddLine("Items must match every selected stat.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    statsFilterBtn:SetScript("OnLeave", function(self)
+        self.bgInner:SetVertexColor(0.06, 0.06, 0.10, 0.92)
+        GameTooltip:Hide()
+    end)
+    statsFilterBtn:RegisterForClicks("LeftButtonUp")
+
+    local upgradesFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Upgrades", 65, statsFilterBtn, "RIGHT")
+    upgradesFilterBtn:SetScript("OnClick", function(self)
+        if not Viewer.showUpgrades and size(Viewer.columnFilters.eq.stats) == 0 then
+            print("|cffffff00LootCollector:|r Select at least one Stats filter before enabling Show Upgrades.")
+            Viewer:ShowColumnFilterDropdown("stats", statsFilterBtn, GetUniqueValues("stats"))
+            return
+        end
+        Viewer.showUpgrades = not Viewer.showUpgrades
+        Viewer.currentPage = 1
+        Cache.filteredResults = {}
+        Cache.lastFilterState = nil
+        Viewer:RefreshData()
+        Viewer:UpdateClearAllButton()
+        Viewer:UpdateFilterButtonStates()
+    end)
+    upgradesFilterBtn:SetScript("OnEnter", function(self)
+        self.bgInner:SetVertexColor(0.14, 0.14, 0.22, 0.95)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Show Upgrades")
+        GameTooltip:AddLine("Keeps items whose every selected stat is strictly higher than the equipped item for that slot.", 1, 1, 1, true)
+        GameTooltip:AddLine("Rings, trinkets, and one-handed weapons are compared against either replaceable slot. Two-handed weapons are compared against both equipped weapons combined.", 0.75, 0.85, 1, true)
+        GameTooltip:Show()
+    end)
+    upgradesFilterBtn:SetScript("OnLeave", function(self)
+        self.bgInner:SetVertexColor(0.06, 0.06, 0.10, 0.92)
+        GameTooltip:Hide()
+    end)
+    upgradesFilterBtn:RegisterForClicks("LeftButtonUp")
+
+    local armorClassFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Armor", 48, upgradesFilterBtn, "RIGHT")
+    armorClassFilterBtn:SetScript("OnClick", function(self)
+        Viewer:ShowColumnFilterDropdown("armorClass", self, GetUniqueValues("armorClass"))
+    end)
+    armorClassFilterBtn:RegisterForClicks("LeftButtonUp")
+
+    local weaponClassFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Weapons", 60, armorClassFilterBtn, "RIGHT")
+    weaponClassFilterBtn:SetScript("OnClick", function(self)
+        Viewer:ShowColumnFilterDropdown("weaponClass", self, GetUniqueValues("weaponClass"))
+    end)
+    weaponClassFilterBtn:RegisterForClicks("LeftButtonUp")
+
+    local usableByFilterBtn = CreateFlatFilterBtn(additionalFiltersFrame, "Usable By", 65, weaponClassFilterBtn, "RIGHT")
     usableByFilterBtn:SetScript("OnClick", function(self, button)
         local values = GetUniqueValues("class")
         Viewer:ShowColumnFilterDropdown("class", self, values)
@@ -3639,6 +4068,10 @@ function Viewer:CreateWindow()
     self.qualityFilterBtn = qualityFilterBtn
     self.vendorTypeFilterBtn = vendorTypeFilterBtn
     self.slotsFilterBtn = slotsFilterBtn
+    self.statsFilterBtn = statsFilterBtn
+    self.upgradesFilterBtn = upgradesFilterBtn
+    self.armorClassFilterBtn = armorClassFilterBtn
+    self.weaponClassFilterBtn = weaponClassFilterBtn
     self.usableByFilterBtn = usableByFilterBtn
     self.favoritesFilterBtn = favoritesFilterBtn
     self.lootedFilterBtn = lootedFilterBtn
@@ -3891,6 +4324,10 @@ function Viewer:CreateWindow()
         Viewer.columnFilters.eq.slot = {}
         Viewer.columnFilters.eq.type = {}
         Viewer.columnFilters.eq.class = {}
+        Viewer.columnFilters.eq.armorClass = {}
+        Viewer.columnFilters.eq.weaponClass = {}
+        Viewer.columnFilters.eq.stats = {}
+        Viewer.showUpgrades = false
         Viewer.columnFilters.ms.class = {}
         Viewer.columnFilters.source = {}
         Viewer.columnFilters.quality = {}
@@ -5608,7 +6045,7 @@ function Viewer:ClearCaches()
     end
 
     local defaultFilters = {
-        eq = { slot = {}, type = {}, class = {} },
+        eq = { slot = {}, type = {}, class = {}, armorClass = {}, weaponClass = {}, stats = {} },
         ms = { class = {} },
         zone = {},
         source = {},
@@ -5630,6 +6067,7 @@ function Viewer:ClearCaches()
     self.lastSeenSortState = "off"
     self.lootedFilterState = nil
     self.collectedMEFilterState = nil
+    self.showUpgrades = false
     self.favoritesFilterState = nil
     
     if self.minReqLevelBox then self.minReqLevelBox:SetText("") end
@@ -5875,6 +6313,21 @@ function Viewer:OnInitialize()
     
     self:CreateWindow() 
     self:ApplySettings()
+    if not self._equipmentEventFrame then
+        self._equipmentEventFrame = CreateFrame("Frame")
+        self._equipmentEventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+        self._equipmentEventFrame:SetScript("OnEvent", function()
+            Viewer._equipmentRevision = (Viewer._equipmentRevision or 0) + 1
+            Cache.filteredResults = {}
+            Cache.lastFilterState = nil
+            if Viewer.showUpgrades and Viewer.window and Viewer.window:IsShown() then
+                Viewer.currentPage = 1
+                Viewer:RefreshData()
+                Viewer:UpdateClearAllButton()
+                Viewer:UpdateFilterButtonStates()
+            end
+        end)
+    end
 
     L:RegisterMessage("LootCollector_DiscoveriesUpdated", function(event, action, guid, discoveryData)
         if not Viewer.window or not Viewer.window:IsShown() then
